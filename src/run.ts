@@ -11,21 +11,24 @@ import * as toolCache from '@actions/tool-cache'
 import * as core from '@actions/core'
 
 const helmToolName = 'helm'
-const stableHelmVersion = 'v3.8.0'
-const helmAllReleasesUrl = 'https://api.github.com/repos/helm/helm/releases'
+const stableHelmVersion = 'v3.13.3'
 
 export async function run() {
    let version = core.getInput('version', {required: true})
 
    if (version !== 'latest' && version[0] !== 'v') {
+      core.info('Getting latest Helm version')
       version = getValidVersion(version)
    }
    if (version.toLocaleLowerCase() === 'latest') {
       version = await getLatestHelmVersion()
    }
 
-   core.debug(util.format('Downloading %s', version))
-   let cachedPath = await downloadHelm(version)
+   const downloadBaseURL = core.getInput('downloadBaseURL', {required: false})
+
+   core.startGroup(`Downloading ${version}`)
+   const cachedPath = await downloadHelm(downloadBaseURL, version)
+   core.endGroup()
 
    try {
       if (!process.env['PATH'].startsWith(path.dirname(cachedPath))) {
@@ -35,117 +38,79 @@ export async function run() {
       //do nothing, set as output variable
    }
 
-   console.log(
-      `Helm tool version: '${version}' has been cached at ${cachedPath}`
-   )
+   core.info(`Helm tool version '${version}' has been cached at ${cachedPath}`)
    core.setOutput('helm-path', cachedPath)
 }
 
-//Returns version with proper v before it
+// Prefixes version with v
 export function getValidVersion(version: string): string {
    return 'v' + version
 }
 
-// Downloads the helm releases JSON and parses all the recent versions of helm from it.
-// Defaults to sending stable helm version if none are valid or if it fails
-
+// Gets the latest helm version or returns a default stable if getting latest fails
 export async function getLatestHelmVersion(): Promise<string> {
-   const helmJSONPath: string = await toolCache.downloadTool(helmAllReleasesUrl)
-
    try {
-      const helmJSON = JSON.parse(fs.readFileSync(helmJSONPath, 'utf-8'))
-      for (let i in helmJSON) {
-         if (isValidVersion(helmJSON[i].tag_name)) {
-            return helmJSON[i].tag_name
-         }
-      }
+      const response = await fetch('https://get.helm.sh/helm-latest-version')
+      const release = (await response.text()).trim()
+      return release
    } catch (err) {
       core.warning(
-         util.format(
-            'Error while fetching the latest Helm release. Error: %s. Using default Helm version %s',
-            err.toString(),
-            stableHelmVersion
-         )
+         `Error while fetching latest Helm release: ${err.toString()}. Using default version ${stableHelmVersion}`
       )
       return stableHelmVersion
    }
-
-   return stableHelmVersion
 }
 
-// isValidVersion checks if verison is a stable release
-function isValidVersion(version: string): boolean {
-   return version.indexOf('rc') == -1
+export function getArch(): string {
+   return os.arch() === 'x64' ? 'amd64' : os.arch()
+}
+
+export function getPlatform(): string {
+   return os.platform() === 'win32' ? 'windows' : os.platform()
+}
+
+export function getArchiveExtension(): string {
+   return os.platform() === 'win32' ? 'zip' : 'tar.gz'
 }
 
 export function getExecutableExtension(): string {
-   if (os.type().match(/^Win/)) {
-      return '.exe'
-   }
-   return ''
+   return os.platform() === 'win32' ? '.exe' : ''
 }
 
-const LINUX = 'Linux'
-const MAC_OS = 'Darwin'
-const WINDOWS = 'Windows_NT'
-const ARM64 = 'arm64'
-export function getHelmDownloadURL(version: string): string {
-   const arch = os.arch()
-   const operatingSystem = os.type()
-
-   switch (true) {
-      case operatingSystem == LINUX && arch == ARM64:
-         return util.format(
-            'https://get.helm.sh/helm-%s-linux-arm64.zip',
-            version
-         )
-      case operatingSystem == LINUX:
-         return util.format(
-            'https://get.helm.sh/helm-%s-linux-amd64.zip',
-            version
-         )
-
-      case operatingSystem == MAC_OS && arch == ARM64:
-         return util.format(
-            'https://get.helm.sh/helm-%s-darwin-arm64.zip',
-            version
-         )
-      case operatingSystem == MAC_OS:
-         return util.format(
-            'https://get.helm.sh/helm-%s-darwin-amd64.zip',
-            version
-         )
-
-      case operatingSystem == WINDOWS:
-      default:
-         return util.format(
-            'https://get.helm.sh/helm-%s-windows-amd64.zip',
-            version
-         )
-   }
+export function getHelmDownloadURL(baseURL: string, version: string): string {
+   const urlPath = `helm-${version}-${getPlatform()}-${getArch()}.${getArchiveExtension()}`
+   const url = new URL(urlPath, baseURL)
+   return url.toString()
 }
 
-export async function downloadHelm(version: string): Promise<string> {
+export async function downloadHelm(
+   baseURL: string,
+   version: string
+): Promise<string> {
    let cachedToolpath = toolCache.find(helmToolName, version)
    if (!cachedToolpath) {
       let helmDownloadPath
       try {
          helmDownloadPath = await toolCache.downloadTool(
-            getHelmDownloadURL(version)
+            getHelmDownloadURL(baseURL, version)
          )
       } catch (exception) {
          throw new Error(
-            util.format(
-               'Failed to download Helm from location',
-               getHelmDownloadURL(version)
-            )
+            `Failed to download Helm from location ${getHelmDownloadURL(
+               baseURL,
+               version
+            )}`
          )
       }
 
       fs.chmodSync(helmDownloadPath, '777')
-      const unzipedHelmPath = await toolCache.extractZip(helmDownloadPath)
+      const extractedPath =
+         getPlatform() === 'windows'
+            ? await toolCache.extractZip(helmDownloadPath)
+            : await toolCache.extractTar(helmDownloadPath)
+
       cachedToolpath = await toolCache.cacheDir(
-         unzipedHelmPath,
+         extractedPath,
          helmToolName,
          version
       )
@@ -190,5 +155,3 @@ export var walkSync = function (dir, filelist, fileToFind) {
    })
    return filelist
 }
-
-run().catch(core.setFailed)

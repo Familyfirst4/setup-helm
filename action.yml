@@ -5,11 +5,20 @@ inputs:
       description: 'Version of helm'
       required: true
       default: 'latest'
+   token:
+      description: GitHub token. Used to be required to fetch the latest version
+      required: false
+      deprecationMessage: 'GitHub token is no longer required'
+      default: '${{ github.token }}'
+   downloadBaseURL:
+      description: 'Set the download base URL'
+      required: false
+      default: 'https://get.helm.sh'
 outputs:
    helm-path:
       description: 'Path to the cached helm binary'
 branding:
    color: 'blue'
 runs:
-   using: 'node16'
+   using: 'node20'
    main: 'lib/index.js'
